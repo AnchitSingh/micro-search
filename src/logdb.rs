@@ -2,20 +2,15 @@
 
 use crate::config::LogConfig;
 use crate::ufhg::{lightning_hash_str, UFHGHeadquarters};
-use omega::omega_timer::{elapsed_ns, timer_init};
+use omega::omega_timer::{elapsed_ns};
 use omega::OmegaHashSet;
-use slab::Slab;
 use smallvec::SmallVec;
 
 pub type Tok = u64;
 pub type DocId = u64;
 
-#[derive(Debug, Clone, Default)]
-pub struct Posting {
-    pub docs: SmallVec<[DocId; 4]>,
-}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MetaEntry {
     tokens: Vec<Tok>,
     timestamp: u64,
@@ -41,44 +36,90 @@ pub enum QueryNode {
 pub struct LogDB {
     ufhg: UFHGHeadquarters,
     postings: OmegaHashSet<Tok, Posting>,
-    docs: Slab<MetaEntry>,
+    docs: OmegaHashSet<DocId,MetaEntry>,
+    next_doc_id: DocId,
     max_postings: usize,
     stale_secs: u64,
     config: LogConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct Posting {
+    small_docs: SmallVec<[DocId; 4]>,
+    large_docs: Option<OmegaHashSet<DocId, ()>>,
 }
 
 impl Posting {
     #[inline]
     fn new() -> Self {
         Self {
-            docs: SmallVec::new(),
+            small_docs: SmallVec::new(),
+            large_docs: None,
         }
     }
 
     #[inline]
     fn add(&mut self, id: DocId) {
-        if !self.docs.contains(&id) {
-            self.docs.push(id);
+        if let Some(ref mut large) = self.large_docs {
+            large.insert(id, ());
+        } else if self.small_docs.len() < 8 {
+            // Use SmallVec for small lists (better cache locality)
+            if !self.small_docs.contains(&id) {
+                self.small_docs.push(id);
+            }
+        } else {
+            // Promote to OmegaHashSet for larger lists
+            let mut large = OmegaHashSet::new(1024);
+            for &doc_id in &self.small_docs {
+                large.insert(doc_id, ());
+            }
+            large.insert(id, ());
+            self.large_docs = Some(large);
+            self.small_docs.clear(); // Free the memory
         }
     }
 
     #[inline]
     fn remove(&mut self, id: DocId) {
-        self.docs.retain(|d| *d != id);
+        if let Some(ref mut large) = self.large_docs {
+            large.remove(&id);
+        } else {
+            self.small_docs.retain(|d| *d != id);
+        }
     }
 
     #[inline]
     fn empty(&self) -> bool {
-        self.docs.is_empty()
+        if let Some(ref large) = self.large_docs {
+            large.is_empty()
+        } else {
+            self.small_docs.is_empty()
+        }
+    }
+
+    fn to_vec(&self) -> Vec<DocId> {
+        if let Some(ref large) = self.large_docs {
+            large.iter_keys().collect()
+        } else {
+            self.small_docs.to_vec()
+        }
     }
 }
+
+impl Default for Posting {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 
 impl LogDB {
     pub fn new() -> Self {
         Self {
             ufhg: UFHGHeadquarters::new(),
             postings: OmegaHashSet::new(40000),
-            docs: Slab::with_capacity(50000),
+            docs: OmegaHashSet::new(50000),
+            next_doc_id: 1,
             max_postings: 32_000,
             stale_secs: 3600, // 1 hour for logs
             config: LogConfig::default(),
@@ -89,7 +130,8 @@ impl LogDB {
         Self {
             ufhg: UFHGHeadquarters::new(),
             postings: OmegaHashSet::new(40000),
-            docs: Slab::with_capacity(50000),
+            docs: OmegaHashSet::new(50000),
+            next_doc_id: 1,
             max_postings: config.max_postings,
             stale_secs: config.stale_secs,
             config,
@@ -118,14 +160,17 @@ impl LogDB {
 
         let (token_slice, token_slice_cloned) = self.ufhg.tokenize_zero_copy(&descriptor);
         let timestamp = now_secs();
-        let doc_id = self.docs.insert(MetaEntry {
+        let doc_id = self.next_doc_id;
+        self.next_doc_id += 1;
+        let entry = MetaEntry {
             tokens: token_slice_cloned,
             timestamp: timestamp,
             level: level,
             service: service,
             ts: timestamp,
             // payload: content.to_string(),
-        }) as u64;
+        };
+        self.docs.insert(doc_id, entry);
 
         // Update postings using your original algorithm
         for &tok in &token_slice {
@@ -137,7 +182,7 @@ impl LogDB {
                 self.postings.insert(tok, v);
             }
         }
-        self.evict_if_needed();
+        // self.evict_if_needed();
         doc_id
     }
     /// Simple log insertion (just content)
@@ -151,8 +196,8 @@ impl LogDB {
         self.exec(&ast)
     }
     /// Separate method to get content by doc ID
-    pub fn get_content(&self, doc_id: DocId) -> Option<String> {
-        self.docs.get(doc_id as usize).map(|e| {
+    pub fn get_content(&self, doc_id: &DocId) -> Option<String> {
+        self.docs.get(doc_id).map(|e| {
             // For now return a placeholder - in real implementation you'd store content properly
             format!("Log entry {} - level:{:?} service:{:?}", 
                    doc_id, e.level, e.service)
@@ -163,7 +208,7 @@ impl LogDB {
     pub fn query_content(&self, q: &str) -> Vec<String> {
         let doc_ids = self.query(q);
         doc_ids.into_iter()
-            .filter_map(|id| self.get_content(id))
+            .filter_map(|id| self.get_content(&id))
             .collect()
     }
 
@@ -176,7 +221,7 @@ impl LogDB {
         let docs = self.exec(&ast);
         docs.into_iter()
             .filter_map(|id| {
-                self.docs.get(id as usize).map(|e| {
+                self.docs.get(&id).map(|e| {
                     (
                         id,
                         format!("Log content {}", id),
@@ -193,10 +238,11 @@ impl LogDB {
         let now = now_secs();
         let stale_ids: Vec<DocId> = self
             .docs
-            .iter()
-            .filter_map(|(i, e)| {
+            .iter_keys()
+            .filter_map(|iter| {
+                let e = self.docs.get(&iter).unwrap();
                 if now - e.ts > self.stale_secs {
-                    Some(i as DocId)
+                    Some(iter)
                 } else {
                     None
                 }
@@ -204,53 +250,52 @@ impl LogDB {
             .collect();
 
         for id in stale_ids {
-            self.remove_doc(id);
+            self.remove_doc(&id);
         }
     }
 
 
-    fn remove_doc(&mut self, id: DocId) {
-        if let Some(entry) = self.docs.get(id as usize) {
+    fn remove_doc(&mut self, id: &DocId) {
+        if let Some(entry) = self.docs.get(id) {
             for &tok in &entry.tokens {
                 if let Some(p) = self.postings.get_mut(&tok) {
-                    p.remove(id);
+                    p.remove(*id);
                     if p.empty() {
                         self.postings.remove(&tok);
                     }
                 }
             }
         }
-        self.docs.remove(id as usize);
+        self.docs.remove(id);
     }
 
-    fn evict_if_needed(&mut self) {
-        if self.postings.len() <= self.max_postings {
-            return;
-        }
-        let over = self.postings.len() - self.max_postings + 512;
-        let mut oldest: Vec<(Tok, u64)> = self
-            .postings
-            .iter_keys()
-            .filter_map(|tok| {
-                self.postings.get(&tok).and_then(|post| {
-                    post.docs
-                        .get(0)
-                        .and_then(|&d| self.docs.get(d as usize).map(|e| (tok, e.ts)))
-                })
-            })
-            .collect();
-        oldest.sort_by_key(|(_, ts)| *ts);
-        for (tok, _) in oldest.into_iter().take(over) {
-            self.postings.remove(&tok);
-        }
-    }
+    // fn evict_if_needed(&mut self) {
+    //     if self.postings.len() <= self.max_postings {
+    //         return;
+    //     }
+    //     let over = self.postings.len() - self.max_postings + 512;
+    //     let mut oldest: Vec<(Tok, u64)> = self
+    //         .postings
+    //         .iter_keys()
+    //         .filter_map(|tok| {
+    //             self.postings.get(&tok).and_then(|post| {
+    //                 post.docs
+    //                     .get(0)
+    //                     .and_then(|&d| self.docs.get(&d).map(|e| (tok, e.ts)))
+    //             })
+    //         })
+    //         .collect();
+    //     oldest.sort_by_key(|(_, ts)| *ts);
+    //     for (tok, _) in oldest.into_iter().take(over) {
+    //         self.postings.remove(&tok);
+    //     }
+    // }
 
     /// Faster postings lookup without cloning
     #[inline]
     fn postings(&self, tok: Tok) -> Vec<DocId> {
         match self.postings.get(&tok) {
-            Some(p) if p.docs.len() <= 4 => p.docs.to_vec(), // SmallVec optimization
-            Some(p) => p.docs.to_vec(),
+            Some(p) => p.to_vec(),
             None => Vec::new(),
         }
     }
@@ -280,8 +325,9 @@ impl LogDB {
             },
             QueryNode::NumericRange("timestamp", lo, hi) => self
                 .docs
-                .iter()
-                .filter_map(|(id, e)| {
+                .iter_keys()
+                .filter_map(|id| {
+                    let e = self.docs.get(&id).unwrap();
                     if e.timestamp >= *lo && e.timestamp <= *hi {
                         Some(id as u64)
                     } else {
@@ -308,8 +354,9 @@ impl LogDB {
 
     fn filter_by_level(&self, level: &str) -> Vec<DocId> {
         self.docs
-            .iter()
-            .filter_map(|(id, e)| {
+            .iter_keys()
+            .filter_map(|id| {
+                let e = self.docs.get(&id).unwrap();
                 if e.level.as_deref() == Some(level) {
                     Some(id as u64)
                 } else {
@@ -321,8 +368,9 @@ impl LogDB {
 
     fn filter_by_service(&self, service: &str) -> Vec<DocId> {
         self.docs
-            .iter()
-            .filter_map(|(id, e)| {
+            .iter_keys()
+            .filter_map(|id| {
+                let e = self.docs.get(&id).unwrap();
                 if e.service.as_deref() == Some(service) {
                     Some(id as u64)
                 } else {

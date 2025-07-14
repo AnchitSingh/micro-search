@@ -7,7 +7,6 @@ license = "MIT"
 repository = "https://github.com/AnchitSingh/LogDB"
 
 [dependencies]
-slab = "0.4"
 smallvec = "1.11"
 omega = {path = "../omega"}
 
