@@ -63,7 +63,6 @@ fn main() {
 
     // Memory and performance stats
     println!("\n📊 Final Statistics:");
-    println!("{}", db.stats());
     
     // Cleanup test
     println!("\n🧹 Testing cleanup...");

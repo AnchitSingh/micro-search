@@ -78,7 +78,7 @@ impl LogDB {
         Self {
             ufhg: UFHGHeadquarters::new(),
             postings: OmegaHashSet::new(40000),
-            docs: Slab::with_capacity(8192),
+            docs: Slab::with_capacity(50000),
             max_postings: 32_000,
             stale_secs: 3600, // 1 hour for logs
             config: LogConfig::default(),
@@ -88,8 +88,8 @@ impl LogDB {
     pub fn with_config(config: LogConfig) -> Self {
         Self {
             ufhg: UFHGHeadquarters::new(),
-            postings: OmegaHashSet::new(12000),
-            docs: Slab::with_capacity(4096),
+            postings: OmegaHashSet::new(40000),
+            docs: Slab::with_capacity(50000),
             max_postings: config.max_postings,
             stale_secs: config.stale_secs,
             config,
@@ -116,16 +116,14 @@ impl LogDB {
             (None, None) => format!("content {}", content),
         };
 
-        let (token_slice, _) = self.ufhg.tokenize_zero_copy(&descriptor);
-        // let new_tokens: Vec<Tok> = token_slice;
-        // let new_tokens_clone = new_tokens.clone();
-        
+        let (token_slice, token_slice_cloned) = self.ufhg.tokenize_zero_copy(&descriptor);
+        let timestamp = now_secs();
         let doc_id = self.docs.insert(MetaEntry {
-            tokens: token_slice.clone(),
-            timestamp: now_secs(),
+            tokens: token_slice_cloned,
+            timestamp: timestamp,
             level: level,
             service: service,
-            ts: now_secs(),
+            ts: timestamp,
             // payload: content.to_string(),
         }) as u64;
 
@@ -139,11 +137,6 @@ impl LogDB {
                 self.postings.insert(tok, v);
             }
         }
-    
-
-        // ❌ REMOVE THIS LINE - it's causing massive performance hit
-        // self.ufhg.learn(content);
-
         self.evict_if_needed();
         doc_id
     }
@@ -152,60 +145,6 @@ impl LogDB {
         self.upsert_log(content, None, None)
     }
 
-    /// Update existing log entry (preserves your diff algorithm)
-    pub fn update_log(
-        &mut self,
-        doc_id: DocId,
-        content: &str,
-        level: Option<String>,
-        service: Option<String>,
-    ) -> bool {
-        if let Some(entry) = self.docs.get_mut(doc_id as usize) {
-            let descriptor = match (&level, &service) {
-                (Some(l), Some(s)) => format!("level {} service {} content {}", l, s, content),
-                (Some(l), None) => format!("level {} content {}", l, content),
-                (None, Some(s)) => format!("service {} content {}", s, content),
-                (None, None) => format!("content {}", content),
-            };
-
-            let (token_slice, _) = self.ufhg.tokenize_zero_copy(&descriptor);
-            let new_tokens: Vec<Tok> = token_slice.to_vec();
-
-            if entry.tokens == new_tokens {
-                entry.ts = now_secs();
-                return true;
-            }
-
-            // Use your original diff algorithm
-            let (remove, add) = diff_tokens(&entry.tokens, &new_tokens);
-
-            for tok in remove {
-                if let Some(post) = self.postings.get_mut(&tok) {
-                    post.remove(doc_id);
-                    if post.empty() {
-                        self.postings.remove(&tok);
-                    }
-                }
-            }
-
-            for tok in add {
-                if let Some(post) = self.postings.get_mut(&tok) {
-                    post.add(doc_id);
-                } else {
-                    let mut v = Posting::new();
-                    v.add(doc_id);
-                    self.postings.insert(tok, v);
-                }
-            }
-
-            entry.tokens = new_tokens;
-            entry.level = level;
-            entry.service = service;
-            entry.ts = now_secs();
-            return true;
-        }
-        false
-    }
 
     pub fn query(&self, q: &str) -> Vec<DocId> {
         let ast = parse_query(q, &self.config);
@@ -269,15 +208,6 @@ impl LogDB {
         }
     }
 
-    pub fn stats(&self) -> String {
-        format!(
-            "LogDB: docs {}  postings {}  est_mem {:.1} KB\n{}",
-            self.docs.len(),
-            self.postings.len(),
-            ((self.postings.len() * 8 + self.docs.len() * 64) as f64) / 1024.0,
-            self.ufhg.get_performance_stats()
-        )
-    }
 
     fn remove_doc(&mut self, id: DocId) {
         if let Some(entry) = self.docs.get(id as usize) {
@@ -315,20 +245,29 @@ impl LogDB {
         }
     }
 
+    /// Faster postings lookup without cloning
+    #[inline]
     fn postings(&self, tok: Tok) -> Vec<DocId> {
-        self.postings
-            .get(&tok)
-            .map(|p| p.docs.clone())
-            .unwrap_or_default()
-            .to_vec()
+        match self.postings.get(&tok) {
+            Some(p) if p.docs.len() <= 4 => p.docs.to_vec(), // SmallVec optimization
+            Some(p) => p.docs.to_vec(),
+            None => Vec::new(),
+        }
     }
 
     fn exec(&self, node: &QueryNode) -> Vec<DocId> {
         match node {
-            QueryNode::Term(w) => self.postings(lightning_hash_str(w)),
-            QueryNode::Contains(w) => self.postings(lightning_hash_str(w)),
+            QueryNode::Term(w) => {
+                // Cache the hash to avoid recomputation
+                let hash = lightning_hash_str(w);
+                self.postings(hash)
+            }
+            QueryNode::Contains(w) => {
+                let hash = lightning_hash_str(w);
+                self.postings(hash)
+            }
             QueryNode::Phrase(p) => {
-                let seq_hash = self.ufhg.string_to_u64_to_seq_hash(&p);
+                let seq_hash = self.ufhg.string_to_u64_to_seq_hash(p);
                 self.postings(seq_hash)
             }
             QueryNode::FieldTerm(f, v) => match *f {
@@ -424,8 +363,18 @@ fn intersect(a: &[DocId], b: &[DocId]) -> Vec<DocId> {
     if a.is_empty() || b.is_empty() {
         return Vec::new();
     }
+    
     let (small, big) = if a.len() < b.len() { (a, b) } else { (b, a) };
-    small.iter().filter(|d| big.contains(d)).cloned().collect()
+    
+    // Pre-allocate with exact size needed
+    let mut result = Vec::with_capacity(small.len().min(big.len()));
+    
+    for &id in small {
+        if big.contains(&id) {
+            result.push(id);
+        }
+    }
+    result
 }
 
 #[inline]

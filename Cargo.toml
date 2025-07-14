@@ -11,9 +11,6 @@ slab = "0.4"
 smallvec = "1.11"
 omega = {path = "../omega"}
 
-[dev-dependencies]
-criterion = "0.6.0"
-chrono = "0.4.37"
 
 [[example]]
 name = "stress_demo"
