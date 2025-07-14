@@ -1,0 +1,25 @@
+[package]
+name = "logdb"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-fast in-memory log search engine with microsecond queries"
+license = "MIT"
+repository = "https://github.com/AnchitSingh/LogDB"
+
+[dependencies]
+slab = "0.4"
+smallvec = "1.11"
+omega = {path = "../omega"}
+
+[dev-dependencies]
+criterion = "0.6.0"
+chrono = "0.4.37"
+
+[[example]]
+name = "stress_demo"
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+opt-level = 3
