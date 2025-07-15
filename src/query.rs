@@ -1,35 +1,56 @@
-//! Query parsing and execution for LogDB.
+//! # Query Parsing and Execution
+//!
+//! This module is responsible for parsing user-provided query strings into a structured
+//! Abstract Syntax Tree (AST) and providing the building blocks for query execution.
+//! It defines the `QueryNode` enum, which represents the different types of query
+//! operations, such as term searches, phrase searches, and logical combinations.
 
 use crate::config::LogConfig;
 
-/// AST node for parsed queries.
+/// Represents a node in the Abstract Syntax Tree (AST) of a parsed query.
+///
+/// Each variant of this enum corresponds to a specific type of search operation,
+/// allowing for a structured representation of complex user queries. This AST is
+/// then used by the query execution engine to retrieve matching documents.
 #[derive(Debug, Clone)]
 pub enum QueryNode {
-    /// Simple term search
+    /// A basic search for a single term.
     Term(String),
-    /// Exact phrase search
+    /// A search for an exact sequence of terms.
     Phrase(String),
-    /// Field-specific search (level:ERROR)
+    /// A search for a term within a specific field, such as `level:ERROR`.
     FieldTerm(&'static str, String),
-    /// Numeric range (timestamp:>=1234567890)
+    /// A search for a numeric value within a given range, such as `timestamp:>=12345`.
     NumericRange(&'static str, u64, u64),
-    /// Contains search for unstructured text
+    /// A search for content that contains a specific substring.
     Contains(String),
-    /// N-gram search
+    /// A search using N-grams, which allows for partial word matching.
     NGram(Vec<String>),
-    /// Fuzzy matching
+    /// A search that allows for approximate matching of a term.
     Fuzzy(String, u8),
-    /// Regex pattern
+    /// A search using regular expressions for advanced pattern matching.
     Regex(String),
-    /// Logical AND
+    /// A logical AND, requiring all sub-queries to match.
     And(Vec<QueryNode>),
-    /// Logical OR
+    /// A logical OR, requiring at least one sub-query to match.
     Or(Vec<QueryNode>),
-    /// Logical NOT
+    /// A logical NOT, excluding documents that match the sub-query.
     Not(Box<QueryNode>),
 }
 
-/// Parse a query string into an AST.
+/// Parses a raw query string into a `QueryNode` AST.
+///
+/// This function tokenizes the input string and constructs a query tree based on
+/// special characters and keywords. It supports field-based searches (e.g., `field:value`),
+/// quoted phrases, and logical operators (AND, OR, NOT).
+///
+/// # Arguments
+/// * `q` - The raw query string to parse.
+/// * `config` - The `LogConfig` to use for parsing, which may contain information
+///              about available fields and other settings.
+///
+/// # Returns
+/// A `QueryNode` representing the root of the parsed query AST.
 pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
     let mut nodes = Vec::new();
     let mut it = q.split_whitespace().peekable();
@@ -40,7 +61,7 @@ pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
             let field = sp.next().unwrap();
             let mut val = sp.next().unwrap().to_string();
 
-            // Handle quoted values
+            // Handle quoted values that may contain spaces.
             if val.starts_with('"') && !val.ends_with('"') {
                 for nxt in it.by_ref() {
                     val.push(' ');
@@ -86,16 +107,16 @@ pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
             let phrase = tok.trim_matches('"').to_string();
             nodes.push(QueryNode::Phrase(phrase));
         } else {
-            // Handle logical operators
+            // Handle logical operators.
             match tok.to_uppercase().as_str() {
-                "AND" => continue, // Default is AND
+                "AND" => continue, // AND is the default operator.
                 "OR" => {
-                    // Convert last node and next node to OR
+                    // Combine the last node with the next node in an OR expression.
                     if let Some(last) = nodes.pop() {
                         if let Some(next_tok) = it.next() {
                             let next_node = if next_tok.contains(':') {
-                                // Parse field term
-                                QueryNode::Term(next_tok.to_string()) // Simplified
+                                // Simplified parsing for the next term in an OR clause.
+                                QueryNode::Term(next_tok.to_string())
                             } else {
                                 QueryNode::Term(next_tok.to_string())
                             };
@@ -104,6 +125,7 @@ pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
                     }
                 }
                 "NOT" => {
+                    // Create a NOT node for the next term.
                     if let Some(next_tok) = it.next() {
                         let next_node = QueryNode::Term(next_tok.to_string());
                         nodes.push(QueryNode::Not(Box::new(next_node)));
@@ -114,10 +136,11 @@ pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
         }
     }
 
+    // Combine multiple nodes with a default AND operator.
     if nodes.len() == 1 {
         nodes.pop().unwrap()
     } else if nodes.is_empty() {
-        QueryNode::Term("".to_string())
+        QueryNode::Term("".to_string()) // Return an empty term if the query is empty.
     } else {
         QueryNode::And(nodes)
     }

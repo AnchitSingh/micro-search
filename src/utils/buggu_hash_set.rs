@@ -1,41 +1,69 @@
+//! # BugguHashSet: A High-Performance, Cache-Friendly Hash Set
+//!
+//! This module provides `BugguHashSet`, a custom hash set implementation designed
+//! for extreme performance and low memory overhead. It is optimized for scenarios
+//! where cache efficiency is critical, such as in-memory indexing and high-speed
+//! data processing. The implementation uses a combination of inline buckets for
+//! small collections and overflow buckets for larger ones, minimizing pointer
+//! chasing and improving data locality.
+
 use crate::utils::buggu_random_generator::BugguRng;
-use crate::utils::buggu_ultra_fast_hash::{lightning_hash_str, buggu_hash_u64_minimal};
+use crate::utils::buggu_ultra_fast_hash::{buggu_hash_u64_minimal, lightning_hash_str};
 
+/// The number of entries that can be stored directly within a bucket before
+/// it transitions to an overflow structure. This is a key parameter for tuning
+/// the cache performance of the hash set.
 const INLINE_BUCKET_SIZE: usize = 4;
+
+/// The initial size of an overflow bucket. When a bucket exceeds `INLINE_BUCKET_SIZE`,
+/// it allocates an overflow vector with this capacity.
 const OVERFLOW_BUCKET_SIZE: usize = 8;
+
 // =============================================================================
-// TRAIT
+// HASHABLE TRAIT
 // =============================================================================
 
+/// A trait for types that can be hashed by `BugguHashSet`.
+///
+/// This trait provides a custom hashing method, `buggu_hash`, which allows for
+/// specialized hashing logic tailored to the performance characteristics of the
+/// hash set.
 pub trait BugguHashable: Eq + PartialEq {
+    /// Computes the hash of a value.
     fn buggu_hash(&self) -> u64;
 }
 
 // =============================================================================
-// IMPLS FOR STRING TYPES
+// HASHABLE IMPLEMENTATIONS FOR STRING TYPES
 // =============================================================================
 
 impl BugguHashable for &str {
+    /// Hashes a string slice using a high-speed hashing algorithm.
     fn buggu_hash(&self) -> u64 {
         lightning_hash_str(self)
     }
 }
 
 impl BugguHashable for String {
+    /// Hashes a `String` by converting it to a string slice.
     fn buggu_hash(&self) -> u64 {
         lightning_hash_str(self.as_str())
     }
 }
 
 // =============================================================================
-// NUMERIC TYPES
+// HASHABLE IMPLEMENTATIONS FOR NUMERIC TYPES
 // =============================================================================
 
-// Macro for numeric types that convert to u64
+/// A macro to implement `BugguHashable` for numeric types.
+///
+/// This macro simplifies the implementation of `BugguHashable` for various integer
+/// types by converting them to `u64` and then applying a minimal hash function.
 macro_rules! impl_buggu_hashable_numeric {
     ($($t:ty),*) => {
         $(
             impl BugguHashable for $t {
+                /// Hashes a numeric value using a minimal, high-speed hash function.
                 fn buggu_hash(&self) -> u64 {
                     buggu_hash_u64_minimal(*self as u64)
                 }
@@ -46,11 +74,15 @@ macro_rules! impl_buggu_hashable_numeric {
 
 impl_buggu_hashable_numeric!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, isize);
 
-// Macro for array/slice types that pack bytes into u64
+/// A macro to implement `BugguHashable` for byte arrays and slices.
+///
+/// This macro packs the first few bytes of an array or slice into a `u64` and
+/// then applies a minimal hash function.
 macro_rules! impl_buggu_hashable_bytes {
     ($($t:ty, $element:ty),*) => {
         $(
             impl BugguHashable for $t {
+                /// Hashes a byte array or slice.
                 fn buggu_hash(&self) -> u64 {
                     let mut num = 0u64;
                     let bytes_to_take = std::cmp::min(8, self.len());
@@ -66,19 +98,21 @@ macro_rules! impl_buggu_hashable_bytes {
 
 impl_buggu_hashable_bytes!([u8], u8, [u16], u16, Vec<u8>, u8, Vec<u16>, u16);
 
-// Fixed-size array implementations
+// Implementations for fixed-size arrays.
 impl<const N: usize> BugguHashable for [u8; N] {
+    /// Hashes a fixed-size byte array.
     fn buggu_hash(&self) -> u64 {
         let mut num = 0u64;
         let bytes_to_take = std::cmp::min(8, N);
-        for i in 0..bytes_to_take {
-            num |= (self[i] as u64) << (i * 8);
+        for (i, &byte) in self.iter().enumerate().take(bytes_to_take) {
+            num |= (byte as u64) << (i * 8);
         }
         buggu_hash_u64_minimal(num)
     }
 }
 
 impl<const N: usize> BugguHashable for [u16; N] {
+    /// Hashes a fixed-size array of `u16` values.
     fn buggu_hash(&self) -> u64 {
         let mut num = 0u64;
         for (i, &byte) in self.iter().enumerate().take(8) {
@@ -88,27 +122,37 @@ impl<const N: usize> BugguHashable for [u16; N] {
     }
 }
 
-// Tuple implementations
+// Implementations for tuples.
 impl BugguHashable for (u32, u32) {
+    /// Hashes a tuple of two `u32` values.
     fn buggu_hash(&self) -> u64 {
         let mut num = self.1;
-        num |= (self.0 as u32) << 8;
+        num |= self.0 << 8;
         buggu_hash_u64_minimal(num as u64)
     }
 }
 
 impl BugguHashable for (i32, i32) {
+    /// Hashes a tuple of two `i32` values.
     fn buggu_hash(&self) -> u64 {
         let mut num = self.1;
-        num |= (self.0 as i32) << 8;
+        num |= self.0 << 8;
         buggu_hash_u64_minimal(num as u64)
     }
 }
 
 // =============================================================================
-// BUCKET TYPES
+// BUCKET STRUCTURE
 // =============================================================================
 
+/// Represents a bucket in the `BugguHashSet`.
+///
+/// A bucket can be in one of three states:
+/// - `Empty`: The bucket contains no entries.
+/// - `Inline`: The bucket stores a small number of entries directly in an array,
+///   avoiding heap allocations and improving cache performance.
+/// - `Overflow`: The bucket has exceeded its inline capacity and now stores its
+///   entries in a heap-allocated vector.
 #[derive(Debug, Clone, Default)]
 pub enum BugguBucket<K, V> {
     #[default]
@@ -126,6 +170,7 @@ pub enum BugguBucket<K, V> {
 // ITERATORS
 // =============================================================================
 
+/// An iterator over the keys of a `BugguHashSet`.
 #[derive(Debug, Clone)]
 pub struct BugguKeyIterator<'a, K, V> {
     storage: &'a [BugguBucket<K, V>],
@@ -186,6 +231,7 @@ where
     }
 }
 
+/// A mutable iterator over the entries of a `BugguHashSet`.
 pub struct BugguIterMut<'a, K, V> {
     storage: std::slice::IterMut<'a, BugguBucket<K, V>>,
     current_bucket: Option<&'a mut BugguBucket<K, V>>,
@@ -198,6 +244,7 @@ where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
     V: Clone + Default,
 {
+    /// Creates a new mutable iterator.
     fn new(storage: &'a mut [BugguBucket<K, V>], remaining: usize) -> Self {
         let mut iter = storage.iter_mut();
         let current_bucket = iter.next();
@@ -273,7 +320,7 @@ where
     }
 }
 
-// Entry API for BugguHashSet
+/// Represents an entry in the `BugguHashSet`, which can be either occupied or vacant.
 pub enum BugguEntry<'a, K, V>
 where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
@@ -283,6 +330,7 @@ where
     Vacant(BugguVacantEntry<'a, K, V>),
 }
 
+/// An occupied entry in the `BugguHashSet`.
 pub struct BugguOccupiedEntry<'a, K, V>
 where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
@@ -294,6 +342,7 @@ where
     entry_idx: usize,
 }
 
+/// A vacant entry in the `BugguHashSet`.
 pub struct BugguVacantEntry<'a, K, V>
 where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
@@ -309,6 +358,7 @@ where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
     V: Clone + Default,
 {
+    /// Inserts a default value if the entry is vacant.
     #[inline(always)]
     pub fn or_insert(self, default: V) -> &'a mut V {
         match self {
@@ -317,6 +367,7 @@ where
         }
     }
 
+    /// Inserts a value computed from a closure if the entry is vacant.
     #[inline(always)]
     pub fn or_insert_with<F>(self, default: F) -> &'a mut V
     where
@@ -328,6 +379,7 @@ where
         }
     }
 
+    /// Returns the key of the entry.
     #[inline(always)]
     pub fn key(&self) -> &K {
         match self {
@@ -336,6 +388,7 @@ where
         }
     }
 
+    /// Modifies the entry if it is occupied.
     #[inline(always)]
     pub fn and_modify<F>(self, f: F) -> Self
     where
@@ -356,11 +409,13 @@ where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
     V: Clone + Default,
 {
+    /// Returns the key of the occupied entry.
     #[inline(always)]
     pub fn key(&self) -> &K {
         &self.key
     }
 
+    /// Returns a reference to the value of the occupied entry.
     #[inline(always)]
     pub fn get(&self) -> &V {
         let bucket = unsafe { self.hashset.storage.get_unchecked(self.bucket_idx) };
@@ -375,6 +430,7 @@ where
         }
     }
 
+    /// Returns a mutable reference to the value of the occupied entry.
     #[inline(always)]
     pub fn get_mut(&mut self) -> &mut V {
         let bucket = unsafe { self.hashset.storage.get_unchecked_mut(self.bucket_idx) };
@@ -389,6 +445,7 @@ where
         }
     }
 
+    /// Converts the occupied entry into a mutable reference to its value.
     #[inline(always)]
     pub fn into_mut(self) -> &'a mut V {
         let bucket = unsafe { self.hashset.storage.get_unchecked_mut(self.bucket_idx) };
@@ -403,6 +460,7 @@ where
         }
     }
 
+    /// Inserts a new value, returning the old value.
     #[inline(always)]
     pub fn insert(&mut self, value: V) -> V {
         std::mem::replace(self.get_mut(), value)
@@ -414,11 +472,13 @@ where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
     V: Clone + Default,
 {
+    /// Returns the key of the vacant entry.
     #[inline(always)]
     pub fn key(&self) -> &K {
         &self.key
     }
 
+    /// Inserts a value into the vacant entry.
     #[inline(always)]
     pub fn insert(self, value: V) -> &'a mut V {
         let bucket_idx = self.bucket_idx;
@@ -474,9 +534,10 @@ where
 }
 
 // =============================================================================
-// MAIN HASHSET IMPLEMENTATION
+// HASHSET IMPLEMENTATION
 // =============================================================================
 
+/// A high-performance, cache-friendly hash set.
 #[derive(Debug, Clone, Default)]
 pub struct BugguHashSet<K, V = ()>
 where
@@ -492,6 +553,7 @@ where
     K: BugguHashable + Eq + PartialEq + Clone + Default,
     V: Clone + Default,
 {
+    /// Creates a new `BugguHashSet` with a specified table size.
     pub fn new(table_size: usize) -> Self {
         BugguHashSet {
             storage: vec![BugguBucket::Empty; table_size],
@@ -499,19 +561,19 @@ where
         }
     }
 
+    /// Returns the number of entries in the hash set.
     #[inline]
     pub fn len(&self) -> usize {
         self.count
     }
 
+    /// Returns `true` if the hash set is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
+
     /// Retains only the elements specified by the predicate.
-    ///
-    /// In other words, remove all pairs `(k, v)` such that `f(&k, &mut v)` returns `false`.
-    /// The elements are visited in unsorted (and unspecified) order.
     pub fn retain<F>(&mut self, mut f: F)
     where
         F: FnMut(&K, &mut V) -> bool,
@@ -533,7 +595,6 @@ where
 
                         if should_keep {
                             if write_idx != read_idx {
-                                // Move the entry to the write position
                                 let temp = std::mem::take(&mut entries[read_idx]);
                                 entries[write_idx] = temp;
                             }
@@ -543,13 +604,11 @@ where
                         }
                     }
 
-                    // Clear the remaining entries
-                    for i in write_idx..current_len {
-                        entries[i] = (K::default(), V::default());
+                    for item in entries.iter_mut().take(current_len).skip(write_idx) {
+                        *item = (K::default(), V::default());
                     }
                     *len = write_idx as u8;
 
-                    // Convert to Empty if no entries remain
                     if write_idx == 0 {
                         *bucket = BugguBucket::Empty;
                     }
@@ -560,7 +619,6 @@ where
                     let new_len = entries.len();
                     total_removed += original_len - new_len;
 
-                    // Convert to Inline or Empty if few entries remain
                     if new_len == 0 {
                         *bucket = BugguBucket::Empty;
                     } else if new_len <= INLINE_BUCKET_SIZE {
@@ -581,13 +639,15 @@ where
         self.count -= total_removed;
     }
 
+    /// Computes the rank (bucket index) for a given key.
     #[inline(always)]
     fn get_rank_for_key(&self, key: &K) -> usize {
         let seed = key.buggu_hash();
         let mut rng = BugguRng::new(seed);
         rng.range(0, self.storage.len() as u64 - 1) as usize
     }
-    // Fast batch contains check using direct bucket access
+
+    /// Performs a fast intersection with a slice of keys.
     pub fn fast_intersect_slice(&self, keys: &[K]) -> Vec<K> {
         let mut result = Vec::new();
 
@@ -610,7 +670,8 @@ where
         }
         result
     }
-    // Add to BugguHashSet
+
+    /// Creates an index from the hash set based on a field extractor function.
     pub fn create_index_for<F, V2>(&self, field_extractor: F) -> BugguHashSet<V2, Vec<K>>
     where
         F: Fn(&V) -> Option<V2>,
@@ -647,14 +708,14 @@ where
 
         index
     }
-    // Add to BugguHashSet
+
+    /// Computes the intersection of two hash sets.
     pub fn intersect_to_set(&self, other: &BugguHashSet<K, V>) -> BugguHashSet<K, ()>
     where
         V: Default + Clone,
     {
         let mut result = BugguHashSet::new(self.len().min(other.len()));
 
-        // Use smaller set for iteration
         let (smaller, larger) = if self.len() < other.len() {
             (self, other)
         } else {
@@ -669,13 +730,11 @@ where
 
         result
     }
-    // Add these methods to BugguHashSet
 
-
-    // Fast intersection between set and slice
-    pub fn fast_difference(&self, exclude: &BugguHashSet<K, V>) -> BugguHashSet<K, ()> 
-    where 
-        V: Clone + Default 
+    /// Computes the difference between two hash sets.
+    pub fn fast_difference(&self, exclude: &BugguHashSet<K, V>) -> BugguHashSet<K, ()>
+    where
+        V: Clone + Default,
     {
         let mut result = BugguHashSet::new(self.len());
         for key in self.iter_keys() {
@@ -685,51 +744,47 @@ where
         }
         result
     }
-    
-    
-    
-    // Direct set operations returning a new set
+
+    /// Computes the union of two hash sets.
     pub fn union_with(&self, other: &BugguHashSet<K, V>) -> BugguHashSet<K, ()>
     where
-        V: Clone + Default
+        V: Clone + Default,
     {
         let mut result = BugguHashSet::new(self.len() + other.len());
-        
-        // Add all from self
+
         for k in self.iter_keys() {
             result.insert(k, ());
         }
-        
-        // Add all from other
+
         for k in other.iter_keys() {
             result.insert(k, ());
         }
-        
+
         result
     }
-    
-    // Direct intersection returning a new set
+
+    /// Computes the intersection of two hash sets.
     pub fn intersect_with(&self, other: &BugguHashSet<K, V>) -> BugguHashSet<K, ()>
     where
-        V: Clone + Default
+        V: Clone + Default,
     {
-        // Use smaller set for iteration
         let (smaller, larger) = if self.len() < other.len() {
             (self, other)
         } else {
             (other, self)
         };
-        
+
         let mut result = BugguHashSet::new(smaller.len());
         for k in smaller.iter_keys() {
             if larger.get(&k).is_some() {
                 result.insert(k, ());
             }
         }
-        
+
         result
     }
 
+    /// Inserts a key-value pair into the hash set.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let rank_idx = self.get_rank_for_key(&key);
         let bucket = unsafe { self.storage.get_unchecked_mut(rank_idx) };
@@ -784,10 +839,10 @@ where
         }
     }
 
+    /// Gets an entry for the given key, allowing for insertion or modification.
     pub fn entry(&mut self, key: K) -> BugguEntry<K, V> {
         let bucket_idx = self.get_rank_for_key(&key);
 
-        // First, check if the key exists and get the entry index
         let entry_info: Option<usize> = {
             let bucket = unsafe { self.storage.get_unchecked(bucket_idx) };
             match bucket {
@@ -822,13 +877,14 @@ where
             }
         };
 
-        // If we get here, the key doesn't exist
         BugguEntry::Vacant(BugguVacantEntry {
             key,
             hashset: self,
             bucket_idx,
         })
     }
+
+    /// Retrieves a reference to the value associated with the given key.
     #[inline(always)]
     pub fn get(&self, key: &K) -> Option<&V> {
         let rank_idx = self.get_rank_for_key(key);
@@ -857,6 +913,7 @@ where
         }
     }
 
+    /// Removes a key-value pair from the hash set.
     #[inline(always)]
     pub fn remove(&mut self, key: &K) -> Option<V> {
         let rank_idx = self.get_rank_for_key(key);
@@ -921,6 +978,7 @@ where
         }
     }
 
+    /// Updates the value associated with a key.
     #[inline(always)]
     pub fn update(&mut self, key: &K, value: V) -> Option<V> {
         let rank_idx = self.get_rank_for_key(key);
@@ -949,6 +1007,7 @@ where
         }
     }
 
+    /// Retrieves a mutable reference to the value associated with the given key.
     #[inline(always)]
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         let rank_idx = self.get_rank_for_key(key);
@@ -980,6 +1039,7 @@ where
         }
     }
 
+    /// Returns a vector of all keys in the hash set.
     pub fn keys(&self) -> Vec<K> {
         if self.count == 0 {
             return Vec::new();
@@ -1002,6 +1062,7 @@ where
         keys
     }
 
+    /// Returns an iterator over the keys of the hash set.
     pub fn iter_keys(&self) -> BugguKeyIterator<K, V> {
         BugguKeyIterator {
             storage: &self.storage,
@@ -1011,16 +1072,19 @@ where
         }
     }
 
+    /// Returns a mutable iterator over the entries of the hash set.
     pub fn iter_mut(&mut self) -> BugguIterMut<K, V> {
         BugguIterMut::new(&mut self.storage, self.count)
     }
 
+    /// Inserts a batch of key-value pairs into the hash set.
     pub fn insert_batch(&mut self, items: Vec<(K, V)>) {
         for (key, value) in items.into_iter() {
             self.insert(key, value);
         }
     }
 
+    /// Returns statistics about the bucket distribution.
     pub fn bucket_stats(&self) -> (usize, usize, usize) {
         let mut empty = 0;
         let mut inline = 0;
