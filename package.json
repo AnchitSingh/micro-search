@@ -1,6 +1,6 @@
 {
-  "name": "micro-search",
-  "version": "1.0.1",
+  "name": "@buggu/micro-search",
+  "version": "1.0.0",
   "description": "Sub-microsecond search engine for Node.js - 400k QPS",
   "main": "index.js",
   "types": "index.d.ts",
