@@ -162,7 +162,22 @@ fn test_large_dataset_performance() {
         //         "Query '{}' took {:.2}μs, exceeds 10μs", query, duration.as_nanos() as f64 / 1000.0);
     }
 }
-
+#[test]
+fn test_structured_queries() {
+    let mut db = LogDB::new();
+    
+    // Insert with proper metadata
+    db.upsert_log("Database connection failed", Some("ERROR".to_string()), Some("auth".to_string()));
+    db.upsert_log("User login successful", Some("INFO".to_string()), Some("auth".to_string()));
+    db.upsert_log("Cache miss occurred", Some("WARN".to_string()), Some("cache".to_string()));
+    db.upsert_log("Operation completed successfully", Some("INFO".to_string()), Some("api".to_string()));
+    
+    // Now these should work:
+    println!("level:ERROR results: {:?}", db.query("level:ERROR"));       // Should find 1
+    println!("service:auth results: {:?}", db.query("service:auth"));     // Should find 2  
+    println!("contains:Database results: {:?}", db.query("contains:Database")); // Should find 1
+    println!("phrase results: {:?}", db.query("\"Operation completed\""));  // Should find 1
+}
 #[test]
 fn test_memory_efficiency() {
     timer_init();
