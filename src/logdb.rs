@@ -175,10 +175,10 @@ impl LogDB {
         service: Option<String>,
     ) -> DocId {
         let descriptor = match (&level, &service) {
-            (Some(l), Some(s)) => format!("level {} service {} content {}", l, s, content),
-            (Some(l), None) => format!("level {} content {}", l, content),
-            (None, Some(s)) => format!("service {} content {}", s, content),
-            (None, None) => format!("content {}", content),
+            (Some(l), Some(s)) => format!("level {l} service {s} content {content}"),
+            (Some(l), None) => format!("level {l} content {content}"),
+            (None, Some(s)) => format!("service {s} content {content}"),
+            (None, None) => format!("content {content}"),
         };
 
         let (_, token_slice_cloned) = self.ufhg.tokenize_zero_copy(&descriptor);
@@ -199,15 +199,24 @@ impl LogDB {
 
         // Update postings
         for &tok in &token_slice_cloned {
-            self.postings.entry(tok).or_insert_with(Posting::new).add(doc_id);
+            self.postings
+                .entry(tok)
+                .or_insert_with(Posting::new)
+                .add(doc_id);
         }
 
         // Update indexes
         if let Some(ref level_val) = level {
-            self.level_index.entry(lightning_hash_str(level_val)).or_insert_with(Vec::new).push(doc_id);
+            self.level_index
+                .entry(lightning_hash_str(level_val))
+                .or_insert_with(Vec::new)
+                .push(doc_id);
         }
         if let Some(ref service_val) = service {
-            self.service_index.entry(lightning_hash_str(service_val)).or_insert_with(Vec::new).push(doc_id);
+            self.service_index
+                .entry(lightning_hash_str(service_val))
+                .or_insert_with(Vec::new)
+                .push(doc_id);
         }
 
         doc_id
@@ -267,12 +276,10 @@ impl LogDB {
     pub fn cleanup_stale(&mut self) {
         let now = now_secs();
         let stale_secs = self.stale_secs;
-        
+
         // Remove stale docs in-place
-        self.docs.retain(|_id, entry| {
-            now - entry.ts <= stale_secs
-        });
-        
+        self.docs.retain(|_id, entry| now - entry.ts <= stale_secs);
+
         // Clean up postings for removed docs
         self.postings.retain(|_tok, posting| {
             posting.retain_docs(&self.docs);
@@ -284,8 +291,15 @@ impl LogDB {
     }
 
     pub fn rebuild_indexes(&mut self) {
-        self.level_index = self.docs.create_index_for(|entry| entry.level.as_ref().map(|s| lightning_hash_str(s.as_str())));
-        self.service_index = self.docs.create_index_for(|entry| entry.service.as_ref().map(|s| lightning_hash_str(s.as_str())));
+        self.level_index = self
+            .docs
+            .create_index_for(|entry| entry.level.as_ref().map(|s| lightning_hash_str(s.as_str())));
+        self.service_index = self.docs.create_index_for(|entry| {
+            entry
+                .service
+                .as_ref()
+                .map(|s| lightning_hash_str(s.as_str()))
+        });
     }
 
     fn exec(&self, node: &QueryNode) -> Vec<DocId> {
@@ -382,14 +396,14 @@ impl LogDB {
     fn filter_by_level(&self, level: &str) -> Vec<DocId> {
         self.level_index
             .get(&lightning_hash_str(level))
-            .map(|docs| docs.clone())
+            .cloned()
             .unwrap_or_default()
     }
 
     fn filter_by_service(&self, service: &str) -> Vec<DocId> {
         self.service_index
             .get(&lightning_hash_str(service))
-            .map(|docs| docs.clone())
+            .cloned()
             .unwrap_or_default()
     }
 

@@ -1,6 +1,6 @@
 //! Delta encoding/decoding for efficient log transmission.
 
-use crate::types::{Tok, DocId};
+use crate::types::{DocId, Tok};
 use std::io;
 
 pub const TAG_FULL: u8 = 0;
@@ -8,8 +8,15 @@ pub const TAG_DIFF: u8 = 1;
 
 #[derive(Debug, PartialEq)]
 pub enum Frame {
-    Full { doc_id: DocId, tokens: Vec<Tok> },
-    Diff { doc_id: DocId, remove: Vec<Tok>, add: Vec<Tok> },
+    Full {
+        doc_id: DocId,
+        tokens: Vec<Tok>,
+    },
+    Diff {
+        doc_id: DocId,
+        remove: Vec<Tok>,
+        add: Vec<Tok>,
+    },
 }
 
 /// Encode a full token set.
@@ -45,7 +52,7 @@ pub fn decode(mut bytes: &[u8]) -> io::Result<Frame> {
     if bytes.is_empty() {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
-    
+
     let tag = bytes[0];
     bytes = &bytes[1..];
     let doc_id = read_uvar(&mut bytes)?;
@@ -70,7 +77,11 @@ pub fn decode(mut bytes: &[u8]) -> io::Result<Frame> {
             for _ in 0..alen {
                 add.push(read_uvar(&mut bytes)?);
             }
-            Ok(Frame::Diff { doc_id, remove, add })
+            Ok(Frame::Diff {
+                doc_id,
+                remove,
+                add,
+            })
         }
         _ => Err(io::Error::new(io::ErrorKind::InvalidData, "bad tag")),
     }
@@ -108,5 +119,8 @@ fn read_uvar(src: &mut &[u8]) -> io::Result<u64> {
         }
         shift += 7;
     }
-    Err(io::Error::new(io::ErrorKind::InvalidData, "varint too long"))
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "varint too long",
+    ))
 }

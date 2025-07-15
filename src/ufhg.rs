@@ -29,8 +29,6 @@ pub fn lightning_hash_str(s: &str) -> u64 {
     result
 }
 
-
-
 #[derive(Debug, Clone)]
 pub struct UFHGHeadquarters {
     word_hashes: Vec<u64>,

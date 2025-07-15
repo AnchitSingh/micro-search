@@ -1,7 +1,7 @@
 //! Configuration for LogDB indexing and querying.
 
-use omega::OmegaHashSet;
 use crate::ufhg::lightning_hash_str;
+use omega::OmegaHashSet;
 use std::fs;
 use std::io;
 
@@ -27,7 +27,7 @@ pub struct LogConfig {
 impl Default for LogConfig {
     fn default() -> Self {
         let mut log_levels = OmegaHashSet::new(4096);
-        
+
         // Use numeric keys (hashes) instead of strings for 40x speedup
         log_levels.insert(lightning_hash_str("TRACE"), 0);
         log_levels.insert(lightning_hash_str("DEBUG"), 1);
@@ -74,7 +74,7 @@ impl LogConfig {
         if let Some(&existing_id) = self.services.get(&service_hash) {
             return existing_id;
         }
-        
+
         let new_id = self.services.len() as u8;
         self.services.insert(service_hash, new_id);
         new_id
@@ -104,7 +104,9 @@ impl LogConfig {
 
     /// Check if log level exists by priority.
     pub fn has_log_level_priority(&self, priority: u8) -> bool {
-        self.log_levels.iter_keys().any(|k| *self.log_levels.get(&k).unwrap() == priority)
+        self.log_levels
+            .iter_keys()
+            .any(|k| *self.log_levels.get(&k).unwrap() == priority)
     }
 
     /// Get statistics about the configuration.
@@ -112,7 +114,7 @@ impl LogConfig {
         format!(
             "LogConfig: levels {} services {} max_postings {} ngrams:{}",
             self.log_levels.len(),
-            self.services.len(), 
+            self.services.len(),
             self.max_postings,
             self.enable_ngrams
         )

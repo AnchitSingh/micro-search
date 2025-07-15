@@ -66,7 +66,7 @@ pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
                     } else {
                         nodes.push(QueryNode::Fuzzy(val, 1));
                     }
-                },
+                }
                 "regex" => nodes.push(QueryNode::Regex(val)),
                 "timestamp" => {
                     if let Some(lo) = val.strip_prefix(">=") {
@@ -79,7 +79,7 @@ pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
                         let ts = val.parse::<u64>().unwrap_or(0);
                         nodes.push(QueryNode::NumericRange("timestamp", ts, ts));
                     }
-                },
+                }
                 _ => nodes.push(QueryNode::FieldTerm("unknown", val)),
             }
         } else if tok.starts_with('"') {
@@ -102,13 +102,13 @@ pub fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
                             nodes.push(QueryNode::Or(vec![last, next_node]));
                         }
                     }
-                },
+                }
                 "NOT" => {
                     if let Some(next_tok) = it.next() {
                         let next_node = QueryNode::Term(next_tok.to_string());
                         nodes.push(QueryNode::Not(Box::new(next_node)));
                     }
-                },
+                }
                 _ => nodes.push(QueryNode::Term(tok.to_string())),
             }
         }

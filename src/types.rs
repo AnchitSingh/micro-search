@@ -42,7 +42,12 @@ impl LogEntry {
         }
     }
 
-    pub fn with_metadata(content: String, level: Option<String>, service: Option<String>, mode: TokenMode) -> Self {
+    pub fn with_metadata(
+        content: String,
+        level: Option<String>,
+        service: Option<String>,
+        mode: TokenMode,
+    ) -> Self {
         Self {
             id: 0,
             content,
