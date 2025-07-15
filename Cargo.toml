@@ -4,18 +4,20 @@ version = "0.1.0"
 edition = "2021"
 description = "Ultra-fast in-memory search engine with microsecond queries"
 license = "MIT"
-repository = "https://github.com/AnchitSingh/LogDB"
+repository = "https://github.com/AnchitSingh/micro-search"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 smallvec = "1.11"
-omega = {path = "../omega"}
 
-[[example]]
-name = "stress_demo"
-path = "examples/stress_demo.rs"
+# Add NAPI-RS
+napi = { version = "2.16.17", default-features = false, features = ["napi4"] }
+napi-derive = { version = "2.16.13" }
+
+[build-dependencies]
+napi-build = "2.0"
 
 [profile.release]
 strip = true

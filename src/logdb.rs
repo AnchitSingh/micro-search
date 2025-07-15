@@ -2,7 +2,7 @@
 
 use crate::config::LogConfig;
 use crate::ufhg::{lightning_hash_str, UFHGHeadquarters};
-use omega::OmegaHashSet;
+use crate::utils::buggu_hash_set::BugguHashSet;
 use smallvec::SmallVec;
 
 pub type Tok = u64;
@@ -31,10 +31,10 @@ pub enum QueryNode {
 #[derive(Debug, Clone)]
 pub struct LogDB {
     ufhg: UFHGHeadquarters,
-    postings: OmegaHashSet<Tok, Posting>,
-    docs: OmegaHashSet<DocId, MetaEntry>,
-    level_index: OmegaHashSet<Tok, Vec<DocId>>,
-    service_index: OmegaHashSet<Tok, Vec<DocId>>,
+    postings: BugguHashSet<Tok, Posting>,
+    docs: BugguHashSet<DocId, MetaEntry>,
+    level_index: BugguHashSet<Tok, Vec<DocId>>,
+    service_index: BugguHashSet<Tok, Vec<DocId>>,
     next_doc_id: DocId,
     max_postings: usize,
     stale_secs: u64,
@@ -44,7 +44,7 @@ pub struct LogDB {
 #[derive(Debug, Clone)]
 pub struct Posting {
     small_docs: SmallVec<[DocId; 4]>,
-    large_docs: Option<OmegaHashSet<DocId, ()>>,
+    large_docs: Option<BugguHashSet<DocId, ()>>,
 }
 
 impl Posting {
@@ -65,7 +65,7 @@ impl Posting {
                 self.small_docs.push(id);
             }
         } else {
-            let mut large = OmegaHashSet::new(512);
+            let mut large = BugguHashSet::new(512);
             for &doc_id in &self.small_docs {
                 large.insert(doc_id, ());
             }
@@ -85,11 +85,11 @@ impl Posting {
     }
 
     #[inline]
-    fn to_set(&self) -> OmegaHashSet<DocId, ()> {
+    fn to_set(&self) -> BugguHashSet<DocId, ()> {
         if let Some(ref large) = self.large_docs {
             large.clone()
         } else {
-            let mut set = OmegaHashSet::new(self.small_docs.len().max(8));
+            let mut set = BugguHashSet::new(self.small_docs.len().max(8));
             for &id in &self.small_docs {
                 set.insert(id, ());
             }
@@ -116,7 +116,7 @@ impl Posting {
     }
 
     #[inline]
-    fn retain_docs(&mut self, docs: &OmegaHashSet<DocId, MetaEntry>) {
+    fn retain_docs(&mut self, docs: &BugguHashSet<DocId, MetaEntry>) {
         if let Some(ref mut large) = self.large_docs {
             large.retain(|id, _| docs.get(id).is_some());
         } else {
@@ -135,10 +135,10 @@ impl LogDB {
     pub fn new() -> Self {
         Self {
             ufhg: UFHGHeadquarters::new(),
-            postings: OmegaHashSet::new(40000),
-            docs: OmegaHashSet::new(50000),
-            level_index: OmegaHashSet::new(40000),
-            service_index: OmegaHashSet::new(40000),
+            postings: BugguHashSet::new(40000),
+            docs: BugguHashSet::new(50000),
+            level_index: BugguHashSet::new(40000),
+            service_index: BugguHashSet::new(40000),
             next_doc_id: 1,
             max_postings: 32_000,
             stale_secs: 3600,
@@ -149,10 +149,10 @@ impl LogDB {
     pub fn with_config(config: LogConfig) -> Self {
         Self {
             ufhg: UFHGHeadquarters::new(),
-            postings: OmegaHashSet::new(40000),
-            docs: OmegaHashSet::new(50000),
-            level_index: OmegaHashSet::new(40000),
-            service_index: OmegaHashSet::new(40000),
+            postings: BugguHashSet::new(40000),
+            docs: BugguHashSet::new(50000),
+            level_index: BugguHashSet::new(40000),
+            service_index: BugguHashSet::new(40000),
             next_doc_id: 1,
             max_postings: config.max_postings,
             stale_secs: config.stale_secs,
@@ -340,24 +340,24 @@ impl LogDB {
         }
     }
 
-    fn exec_to_set(&self, node: &QueryNode) -> OmegaHashSet<DocId, ()> {
+    fn exec_to_set(&self, node: &QueryNode) -> BugguHashSet<DocId, ()> {
         let docs = self.exec(node);
-        let mut set = OmegaHashSet::new(docs.len().max(8));
+        let mut set = BugguHashSet::new(docs.len().max(8));
         for id in docs {
             set.insert(id, ());
         }
         set
     }
 
-    fn get_term_set(&self, tok: &Tok) -> OmegaHashSet<DocId, ()> {
+    fn get_term_set(&self, tok: &Tok) -> BugguHashSet<DocId, ()> {
         self.postings
             .get(tok)
             .map(|p| p.to_set())
-            .unwrap_or_else(|| OmegaHashSet::new(1))
+            .unwrap_or_else(|| BugguHashSet::new(1))
     }
 
-    fn create_all_docs_set(&self) -> OmegaHashSet<DocId, ()> {
-        let mut set = OmegaHashSet::new(self.docs.len());
+    fn create_all_docs_set(&self) -> BugguHashSet<DocId, ()> {
+        let mut set = BugguHashSet::new(self.docs.len());
         for id in self.docs.iter_keys() {
             set.insert(id, ());
         }

@@ -1,7 +1,7 @@
 //! Configuration for LogDB indexing and querying.
 
 use crate::ufhg::lightning_hash_str;
-use omega::OmegaHashSet;
+use crate::utils::buggu_hash_set::BugguHashSet;
 use std::fs;
 use std::io;
 
@@ -13,9 +13,9 @@ pub struct LogConfig {
     /// Seconds after which documents are considered stale
     pub stale_secs: u64,
     /// Log level mappings (hash -> priority)
-    pub log_levels: OmegaHashSet<u64, u8>,
+    pub log_levels: BugguHashSet<u64, u8>,
     /// Service name mappings (hash -> id)  
-    pub services: OmegaHashSet<u64, u8>,
+    pub services: BugguHashSet<u64, u8>,
     /// Enable N-gram indexing
     pub enable_ngrams: bool,
     /// Maximum N-gram size
@@ -26,7 +26,7 @@ pub struct LogConfig {
 
 impl Default for LogConfig {
     fn default() -> Self {
-        let mut log_levels = OmegaHashSet::new(4096);
+        let mut log_levels = BugguHashSet::new(4096);
 
         // Use numeric keys (hashes) instead of strings for 40x speedup
         log_levels.insert(lightning_hash_str("TRACE"), 0);
@@ -40,7 +40,7 @@ impl Default for LogConfig {
             max_postings: 32_000,
             stale_secs: 3600, // 1 hour
             log_levels,
-            services: OmegaHashSet::new(4096),
+            services: BugguHashSet::new(4096),
             enable_ngrams: true,
             max_ngram_size: 3,
             enable_patterns: true,

@@ -1,0 +1,56 @@
+{
+  "name": "micro-search",
+  "version": "0.1.0",
+  "description": "Microsecond search engine for Node.js - powered by Buggu",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "buggu",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "x86_64-pc-windows-msvc",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "node test.js",
+    "bench": "node benchmark.js",
+    "demo": "node test.js"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.16.0"
+  },
+  "keywords": ["search", "fast", "logs", "microsecond", "embedded"],
+  "author": "Anchit Singh Bhagtana",
+  "license": "MIT",
+  "repository": {
+    "type": "git", 
+    "url": "https://github.com/AnchitSingh/micro-search"
+  },
+  "engines": {
+    "node": ">= 12"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "test.js",
+    "benchmark.js",
+    "*.node"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

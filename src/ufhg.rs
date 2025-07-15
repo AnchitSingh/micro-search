@@ -1,5 +1,5 @@
-use omega::oufh::lightning_hash_str_64;
-use omega::oufh::omega_hash_u64_minimal;
+use crate::utils::buggu_ultra_fast_hash::lightning_hash_str_64;
+use crate::utils::buggu_ultra_fast_hash::buggu_hash_u64_minimal;
 
 #[inline(always)]
 pub fn lightning_hash_str(s: &str) -> u64 {
@@ -154,5 +154,5 @@ fn process_whitespace_len(len: u64) -> u64 {
         x = x * 100 + 32;
     }
     x = x * 1000 + len;
-    omega_hash_u64_minimal(x)
+    buggu_hash_u64_minimal(x)
 }
