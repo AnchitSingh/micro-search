@@ -1,6 +1,6 @@
 {
   "name": "micro-search",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Sub-microsecond search engine for Node.js - 400k QPS",
   "main": "index.js",
   "types": "index.d.ts",
@@ -17,7 +17,13 @@
     "benchmark.js",
     "*.node"
   ],
-  "keywords": ["search", "fast", "microsecond", "logs", "performance"],
+  "keywords": [
+    "search",
+    "fast",
+    "microsecond",
+    "logs",
+    "performance"
+  ],
   "author": "Anchit Singh Bhagtana",
   "license": "MIT",
   "repository": {
