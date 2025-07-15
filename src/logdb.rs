@@ -16,6 +16,7 @@ pub struct MetaEntry {
     level: Option<String>,
     service: Option<String>,
     ts: u64,
+    content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +192,7 @@ impl LogDB {
             level: level.clone(),
             service: service.clone(),
             ts: timestamp,
+            content: content.to_string(),
         };
 
         self.docs.insert(doc_id, entry);
@@ -220,13 +222,17 @@ impl LogDB {
         self.exec(&ast)
     }
 
+    // pub fn get_content(&self, doc_id: &DocId) -> Option<String> {
+    //     self.docs.get(doc_id).map(|e| {
+    //         format!(
+    //             "Log entry {} - level:{:?} service:{:?}",
+    //             doc_id, e.level, e.service
+    //         )
+    //     })
+    // }
+
     pub fn get_content(&self, doc_id: &DocId) -> Option<String> {
-        self.docs.get(doc_id).map(|e| {
-            format!(
-                "Log entry {} - level:{:?} service:{:?}",
-                doc_id, e.level, e.service
-            )
-        })
+        self.docs.get(doc_id).map(|e| e.content.clone())
     }
 
     pub fn query_content(&self, q: &str) -> Vec<String> {
@@ -248,7 +254,7 @@ impl LogDB {
                 self.docs.get(&id).map(|e| {
                     (
                         id,
-                        format!("Log content {}", id),
+                        e.content.clone(),
                         e.level.clone(),
                         e.service.clone(),
                         e.timestamp,
@@ -278,8 +284,8 @@ impl LogDB {
     }
 
     pub fn rebuild_indexes(&mut self) {
-        self.level_index = self.docs.create_index_for(|entry| Some(lightning_hash_str(entry.level.as_ref().unwrap())));
-        self.service_index = self.docs.create_index_for(|entry| Some(lightning_hash_str(entry.service.as_ref().unwrap())));
+        self.level_index = self.docs.create_index_for(|entry| entry.level.as_ref().map(|s| lightning_hash_str(s.as_str())));
+        self.service_index = self.docs.create_index_for(|entry| entry.service.as_ref().map(|s| lightning_hash_str(s.as_str())));
     }
 
     fn exec(&self, node: &QueryNode) -> Vec<DocId> {

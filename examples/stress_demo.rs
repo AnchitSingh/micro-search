@@ -1,7 +1,9 @@
 use logdb::LogDB;
 use std::time::Instant;
+use omega::omega_timer::timer_init;
 
 fn main() {
+    timer_init();
     println!("🚀 LogDB Stress Test Demo");
     println!("========================");
 

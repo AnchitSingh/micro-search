@@ -11,7 +11,7 @@ pub fn lightning_hash_str(s: &str) -> u64 {
     for &byte in s.as_bytes() {
         let pos = match byte {
             b'a'..=b'z' => byte - b'a' + 1,
-            b'A'..=b'Z' => byte - b'A' + 27,
+            b'A'..=b'Z' => byte - b'A' + 1,
             _ => {
                 has_special = true;
                 break;
@@ -53,7 +53,7 @@ impl UFHGHeadquarters {
         for &byte in s.as_bytes() {
             let pos = match byte {
                 b'a'..=b'z' => byte - b'a' + 1,
-                b'A'..=b'Z' => byte - b'A' + 27,
+                b'A'..=b'Z' => byte - b'A' + 1,
                 _ => {
                     has_special = true;
                     break;

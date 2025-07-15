@@ -13,7 +13,9 @@ omega = {path = "../omega"}
 
 [[example]]
 name = "stress_demo"
-
+path = "examples/stress_demo.rs"
+[lib]
+crate-type = ["rlib", "cdylib"]
 [profile.release]
 strip = true
 lto = "fat"
