@@ -2,13 +2,12 @@
 
 use crate::config::LogConfig;
 use crate::ufhg::{lightning_hash_str, UFHGHeadquarters};
-use omega::omega_timer::{elapsed_ns};
+use omega::omega_timer::elapsed_ns;
 use omega::OmegaHashSet;
 use smallvec::SmallVec;
 
 pub type Tok = u64;
 pub type DocId = u64;
-
 
 #[derive(Debug, Clone, Default)]
 pub struct MetaEntry {
@@ -17,7 +16,6 @@ pub struct MetaEntry {
     level: Option<String>,
     service: Option<String>,
     ts: u64,
-    // payload: String,
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +34,9 @@ pub enum QueryNode {
 pub struct LogDB {
     ufhg: UFHGHeadquarters,
     postings: OmegaHashSet<Tok, Posting>,
-    docs: OmegaHashSet<DocId,MetaEntry>,
+    docs: OmegaHashSet<DocId, MetaEntry>,
+    level_index: OmegaHashSet<Tok, Vec<DocId>>,
+    service_index: OmegaHashSet<Tok, Vec<DocId>>,
     next_doc_id: DocId,
     max_postings: usize,
     stale_secs: u64,
@@ -62,20 +62,18 @@ impl Posting {
     fn add(&mut self, id: DocId) {
         if let Some(ref mut large) = self.large_docs {
             large.insert(id, ());
-        } else if self.small_docs.len() < 96 {
-            // Use SmallVec for small lists (better cache locality)
+        } else if self.small_docs.len() < 128 {
             if !self.small_docs.contains(&id) {
                 self.small_docs.push(id);
             }
         } else {
-            // Promote to OmegaHashSet for larger lists
-            let mut large = OmegaHashSet::new(1024);
+            let mut large = OmegaHashSet::new(512);
             for &doc_id in &self.small_docs {
                 large.insert(doc_id, ());
             }
             large.insert(id, ());
             self.large_docs = Some(large);
-            self.small_docs.clear(); // Free the memory
+            self.small_docs.clear();
         }
     }
 
@@ -89,6 +87,28 @@ impl Posting {
     }
 
     #[inline]
+    fn to_set(&self) -> OmegaHashSet<DocId, ()> {
+        if let Some(ref large) = self.large_docs {
+            large.clone()
+        } else {
+            let mut set = OmegaHashSet::new(self.small_docs.len().max(8));
+            for &id in &self.small_docs {
+                set.insert(id, ());
+            }
+            set
+        }
+    }
+
+    #[inline]
+    fn get_docs(&self) -> Vec<DocId> {
+        if let Some(ref large) = self.large_docs {
+            large.keys()
+        } else {
+            self.small_docs.to_vec()
+        }
+    }
+
+    #[inline]
     fn empty(&self) -> bool {
         if let Some(ref large) = self.large_docs {
             large.is_empty()
@@ -97,11 +117,12 @@ impl Posting {
         }
     }
 
-    fn to_vec(&self) -> Vec<DocId> {
-        if let Some(ref large) = self.large_docs {
-            large.keys()
+    #[inline]
+    fn retain_docs(&mut self, docs: &OmegaHashSet<DocId, MetaEntry>) {
+        if let Some(ref mut large) = self.large_docs {
+            large.retain(|id, _| docs.get(id).is_some());
         } else {
-            self.small_docs.to_vec()
+            self.small_docs.retain(|id| docs.get(id).is_some());
         }
     }
 }
@@ -112,16 +133,17 @@ impl Default for Posting {
     }
 }
 
-
 impl LogDB {
     pub fn new() -> Self {
         Self {
             ufhg: UFHGHeadquarters::new(),
             postings: OmegaHashSet::new(40000),
             docs: OmegaHashSet::new(50000),
+            level_index: OmegaHashSet::new(40000),
+            service_index: OmegaHashSet::new(40000),
             next_doc_id: 1,
             max_postings: 32_000,
-            stale_secs: 3600, // 1 hour for logs
+            stale_secs: 3600,
             config: LogConfig::default(),
         }
     }
@@ -131,6 +153,8 @@ impl LogDB {
             ufhg: UFHGHeadquarters::new(),
             postings: OmegaHashSet::new(40000),
             docs: OmegaHashSet::new(50000),
+            level_index: OmegaHashSet::new(40000),
+            service_index: OmegaHashSet::new(40000),
             next_doc_id: 1,
             max_postings: config.max_postings,
             stale_secs: config.stale_secs,
@@ -143,14 +167,12 @@ impl LogDB {
         Ok(Self::with_config(config))
     }
 
-    /// Insert a log entry - REMOVE expensive learning
     pub fn upsert_log(
         &mut self,
         content: &str,
         level: Option<String>,
         service: Option<String>,
     ) -> DocId {
-        // Create descriptor for tokenization
         let descriptor = match (&level, &service) {
             (Some(l), Some(s)) => format!("level {} service {} content {}", l, s, content),
             (Some(l), None) => format!("level {} content {}", l, content),
@@ -158,61 +180,63 @@ impl LogDB {
             (None, None) => format!("content {}", content),
         };
 
-        let (token_slice, token_slice_cloned) = self.ufhg.tokenize_zero_copy(&descriptor);
+        let (_, token_slice_cloned) = self.ufhg.tokenize_zero_copy(&descriptor);
         let timestamp = now_secs();
         let doc_id = self.next_doc_id;
         self.next_doc_id += 1;
+
         let entry = MetaEntry {
-            tokens: token_slice_cloned,
-            timestamp: timestamp,
-            level: level,
-            service: service,
+            tokens: token_slice_cloned.clone(),
+            timestamp,
+            level: level.clone(),
+            service: service.clone(),
             ts: timestamp,
-            // payload: content.to_string(),
         };
+
         self.docs.insert(doc_id, entry);
 
-        // Update postings using your original algorithm
-        for &tok in &token_slice {
-            if let Some(post) = self.postings.get_mut(&tok) {
-                post.add(doc_id);
-            } else {
-                let mut v = Posting::new();
-                v.add(doc_id);
-                self.postings.insert(tok, v);
-            }
+        // Update postings
+        for &tok in &token_slice_cloned {
+            self.postings.entry(tok).or_insert_with(Posting::new).add(doc_id);
         }
-        // self.evict_if_needed();
+
+        // Update indexes
+        if let Some(ref level_val) = level {
+            self.level_index.entry(lightning_hash_str(level_val)).or_insert_with(Vec::new).push(doc_id);
+        }
+        if let Some(ref service_val) = service {
+            self.service_index.entry(lightning_hash_str(service_val)).or_insert_with(Vec::new).push(doc_id);
+        }
+
         doc_id
     }
-    /// Simple log insertion (just content)
+
     pub fn upsert_simple(&mut self, content: &str) -> DocId {
         self.upsert_log(content, None, None)
     }
-
 
     pub fn query(&self, q: &str) -> Vec<DocId> {
         let ast = parse_query(q, &self.config);
         self.exec(&ast)
     }
-    /// Separate method to get content by doc ID
+
     pub fn get_content(&self, doc_id: &DocId) -> Option<String> {
         self.docs.get(doc_id).map(|e| {
-            // For now return a placeholder - in real implementation you'd store content properly
-            format!("Log entry {} - level:{:?} service:{:?}", 
-                   doc_id, e.level, e.service)
+            format!(
+                "Log entry {} - level:{:?} service:{:?}",
+                doc_id, e.level, e.service
+            )
         })
     }
 
-    /// Query and return full content
     pub fn query_content(&self, q: &str) -> Vec<String> {
         let doc_ids = self.query(q);
-        doc_ids.into_iter()
+        doc_ids
+            .into_iter()
             .filter_map(|id| self.get_content(&id))
             .collect()
     }
 
-    /// Get log entries with metadata
     pub fn query_with_meta(
         &self,
         q: &str,
@@ -236,139 +260,141 @@ impl LogDB {
 
     pub fn cleanup_stale(&mut self) {
         let now = now_secs();
-        let stale_ids: Vec<DocId> = self
-            .docs
-            .iter_keys()
-            .filter_map(|iter| {
-                let e = self.docs.get(&iter).unwrap();
-                if now - e.ts > self.stale_secs {
-                    Some(iter)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let stale_secs = self.stale_secs;
+        
+        // Remove stale docs in-place
+        self.docs.retain(|_id, entry| {
+            now - entry.ts <= stale_secs
+        });
+        
+        // Clean up postings for removed docs
+        self.postings.retain(|_tok, posting| {
+            posting.retain_docs(&self.docs);
+            !posting.empty()
+        });
 
-        for id in stale_ids {
-            self.remove_doc(&id);
-        }
+        // Rebuild indexes after cleanup
+        self.rebuild_indexes();
     }
 
-
-    fn remove_doc(&mut self, id: &DocId) {
-        if let Some(entry) = self.docs.get(id) {
-            for &tok in &entry.tokens {
-                if let Some(p) = self.postings.get_mut(&tok) {
-                    p.remove(*id);
-                    if p.empty() {
-                        self.postings.remove(&tok);
-                    }
-                }
-            }
-        }
-        self.docs.remove(id);
-    }
-
-    /// Faster postings lookup without cloning
-    #[inline]
-    fn postings(&self, tok: Tok) -> Vec<DocId> {
-        match self.postings.get(&tok) {
-            Some(p) => p.to_vec(),
-            None => Vec::new(),
-        }
+    pub fn rebuild_indexes(&mut self) {
+        self.level_index = self.docs.create_index_for(|entry| Some(lightning_hash_str(entry.level.as_ref().unwrap())));
+        self.service_index = self.docs.create_index_for(|entry| Some(lightning_hash_str(entry.service.as_ref().unwrap())));
     }
 
     fn exec(&self, node: &QueryNode) -> Vec<DocId> {
         match node {
-            QueryNode::Term(w) => {
-                // Cache the hash to avoid recomputation
+            QueryNode::Term(w) | QueryNode::Contains(w) => {
                 let hash = lightning_hash_str(w);
-                self.postings(hash)
+                self.postings
+                    .get(&hash)
+                    .map(|p| p.get_docs())
+                    .unwrap_or_default()
             }
-            QueryNode::Contains(w) => {
-                let hash = lightning_hash_str(w);
-                self.postings(hash)
-            }
+
             QueryNode::Phrase(p) => {
                 let seq_hash = self.ufhg.string_to_u64_to_seq_hash(p);
-                self.postings(seq_hash)
+                self.postings
+                    .get(&seq_hash)
+                    .map(|p| p.get_docs())
+                    .unwrap_or_default()
             }
+
             QueryNode::FieldTerm(f, v) => match *f {
                 "level" => self.filter_by_level(v),
                 "service" => self.filter_by_service(v),
-                _ => intersect(
-                    &self.postings(lightning_hash_str(f)),
-                    &self.postings(lightning_hash_str(v)),
-                ),
+                _ => {
+                    let field_set = self.get_term_set(&lightning_hash_str(f));
+                    let value_set = self.get_term_set(&lightning_hash_str(v));
+                    field_set.intersect_with(&value_set).keys()
+                }
             },
-            QueryNode::NumericRange("timestamp", lo, hi) => self
-                .docs
-                .iter_keys()
-                .filter_map(|id| {
-                    let e = self.docs.get(&id).unwrap();
-                    if e.timestamp >= *lo && e.timestamp <= *hi {
-                        Some(id as u64)
-                    } else {
-                        None
+
+            QueryNode::And(children) => {
+                if children.is_empty() {
+                    return Vec::new();
+                }
+
+                let mut result_set = self.exec_to_set(&children[0]);
+                for child in &children[1..] {
+                    let other_set = self.exec_to_set(child);
+                    result_set = result_set.intersect_with(&other_set);
+                    if result_set.is_empty() {
+                        break;
                     }
-                })
-                .collect(),
-            QueryNode::And(xs) => xs
-                .iter()
-                .skip(1)
-                .fold(self.exec(&xs[0]), |acc, n| intersect(&acc, &self.exec(n))),
-            QueryNode::Or(xs) => xs
-                .iter()
-                .skip(1)
-                .fold(self.exec(&xs[0]), |acc, n| union(&acc, &self.exec(n))),
-            QueryNode::Not(x) => {
-                let excl = self.exec(x);
-                let all: Vec<DocId> = (0..self.docs.len() as u64).collect();
-                difference(&all, &excl)
+                }
+                result_set.keys()
             }
+
+            QueryNode::Or(children) => {
+                if children.is_empty() {
+                    return Vec::new();
+                }
+
+                let mut result_set = self.exec_to_set(&children[0]);
+                for child in &children[1..] {
+                    let other_set = self.exec_to_set(child);
+                    result_set = result_set.union_with(&other_set);
+                }
+                result_set.keys()
+            }
+
+            QueryNode::Not(child) => {
+                let exclude_set = self.exec_to_set(child);
+                let all_docs_set = self.create_all_docs_set();
+                all_docs_set.fast_difference(&exclude_set).keys()
+            }
+
             _ => Vec::new(),
         }
     }
 
+    fn exec_to_set(&self, node: &QueryNode) -> OmegaHashSet<DocId, ()> {
+        let docs = self.exec(node);
+        let mut set = OmegaHashSet::new(docs.len().max(8));
+        for id in docs {
+            set.insert(id, ());
+        }
+        set
+    }
+
+    fn get_term_set(&self, tok: &Tok) -> OmegaHashSet<DocId, ()> {
+        self.postings
+            .get(tok)
+            .map(|p| p.to_set())
+            .unwrap_or_else(|| OmegaHashSet::new(1))
+    }
+
+    fn create_all_docs_set(&self) -> OmegaHashSet<DocId, ()> {
+        let mut set = OmegaHashSet::new(self.docs.len());
+        for id in self.docs.iter_keys() {
+            set.insert(id, ());
+        }
+        set
+    }
+
     fn filter_by_level(&self, level: &str) -> Vec<DocId> {
-        self.docs
-            .iter_keys()
-            .filter_map(|id| {
-                let e = self.docs.get(&id).unwrap();
-                if e.level.as_deref() == Some(level) {
-                    Some(id as u64)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.level_index
+            .get(&lightning_hash_str(level))
+            .map(|docs| docs.clone())
+            .unwrap_or_default()
     }
 
     fn filter_by_service(&self, service: &str) -> Vec<DocId> {
-        self.docs
-            .iter_keys()
-            .filter_map(|id| {
-                let e = self.docs.get(&id).unwrap();
-                if e.service.as_deref() == Some(service) {
-                    Some(id as u64)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.service_index
+            .get(&lightning_hash_str(service))
+            .map(|docs| docs.clone())
+            .unwrap_or_default()
     }
 
-    // Your original token helpers preserved
     pub fn upsert_token(&mut self, s: impl AsRef<str>) -> Tok {
         let tok = lightning_hash_str(s.as_ref());
-        if self.postings.get(&tok).is_none() {
-            self.postings.insert(tok, Posting::default());
-        }
+        self.postings.entry(tok).or_insert_with(Posting::default);
         tok
     }
 
     pub fn export_tokens(&self) -> Vec<Tok> {
-        self.postings.iter_keys().collect()
+        self.postings.keys()
     }
 
     pub fn import_tokens(&mut self, toks: Vec<Tok>) {
@@ -378,69 +404,9 @@ impl LogDB {
     }
 }
 
-// Your original helper functions preserved exactly
 #[inline]
 fn now_secs() -> u64 {
     elapsed_ns() / 1_000_000_000
-}
-
-#[inline]
-fn intersect(a: &[DocId], b: &[DocId]) -> Vec<DocId> {
-    if a.is_empty() || b.is_empty() {
-        return Vec::new();
-    }
-    
-    let (small, big) = if a.len() < b.len() { (a, b) } else { (b, a) };
-    
-    // Pre-allocate with exact size needed
-    let mut result = Vec::with_capacity(small.len().min(big.len()));
-    
-    for &id in small {
-        if big.contains(&id) {
-            result.push(id);
-        }
-    }
-    result
-}
-
-#[inline]
-fn union(a: &[DocId], b: &[DocId]) -> Vec<DocId> {
-    let mut out = a.to_vec();
-    for x in b {
-        if !out.contains(x) {
-            out.push(*x);
-        }
-    }
-    out
-}
-
-#[inline]
-fn difference(a: &[DocId], b: &[DocId]) -> Vec<DocId> {
-    a.iter().filter(|d| !b.contains(d)).cloned().collect()
-}
-
-fn diff_tokens(old: &[Tok], new: &[Tok]) -> (Vec<Tok>, Vec<Tok>) {
-    let mut newset = OmegaHashSet::new(1024);
-    let mut oldset = OmegaHashSet::new(1024);
-
-    for &token in new {
-        newset.insert(token, ());
-    }
-    for &token in old {
-        oldset.insert(token, ());
-    }
-
-    let remove: Vec<Tok> = old
-        .iter()
-        .filter(|t| newset.get(t).is_none())
-        .cloned()
-        .collect();
-    let add: Vec<Tok> = new
-        .iter()
-        .filter(|t| oldset.get(t).is_none())
-        .cloned()
-        .collect();
-    (remove, add)
 }
 
 fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
