@@ -174,10 +174,10 @@ fn main() {
     println!("Time taken: {:?}", duration);
     println!("Results with metadata:");
 
-    for (doc_id, content, level, service, timestamp) in meta_results {
+    for (doc_id, content, level, service) in meta_results {
         println!(
-            "  ID: {}, Content: {}, Level: {:?}, Service: {:?}, Timestamp: {}",
-            doc_id, content, level, service, timestamp
+            "  ID: {}, Content: {}, Level: {:?}, Service: {:?}",
+            doc_id, content, level, service
         );
     }
 

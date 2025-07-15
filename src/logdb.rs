@@ -2,7 +2,6 @@
 
 use crate::config::LogConfig;
 use crate::ufhg::{lightning_hash_str, UFHGHeadquarters};
-use omega::omega_timer::elapsed_ns;
 use omega::OmegaHashSet;
 use smallvec::SmallVec;
 
@@ -12,10 +11,8 @@ pub type DocId = u64;
 #[derive(Debug, Clone, Default)]
 pub struct MetaEntry {
     tokens: Vec<Tok>,
-    timestamp: u64,
     level: Option<String>,
     service: Option<String>,
-    ts: u64,
     content: String,
 }
 
@@ -182,16 +179,13 @@ impl LogDB {
         };
 
         let (_, token_slice_cloned) = self.ufhg.tokenize_zero_copy(&descriptor);
-        let timestamp = now_secs();
         let doc_id = self.next_doc_id;
         self.next_doc_id += 1;
 
         let entry = MetaEntry {
             tokens: token_slice_cloned.clone(),
-            timestamp,
             level: level.clone(),
             service: service.clone(),
-            ts: timestamp,
             content: content.to_string(),
         };
 
@@ -231,15 +225,6 @@ impl LogDB {
         self.exec(&ast)
     }
 
-    // pub fn get_content(&self, doc_id: &DocId) -> Option<String> {
-    //     self.docs.get(doc_id).map(|e| {
-    //         format!(
-    //             "Log entry {} - level:{:?} service:{:?}",
-    //             doc_id, e.level, e.service
-    //         )
-    //     })
-    // }
-
     pub fn get_content(&self, doc_id: &DocId) -> Option<String> {
         self.docs.get(doc_id).map(|e| e.content.clone())
     }
@@ -255,7 +240,7 @@ impl LogDB {
     pub fn query_with_meta(
         &self,
         q: &str,
-    ) -> Vec<(DocId, String, Option<String>, Option<String>, u64)> {
+    ) -> Vec<(DocId, String, Option<String>, Option<String>)> {
         let ast = parse_query(q, &self.config);
         let docs = self.exec(&ast);
         docs.into_iter()
@@ -265,8 +250,7 @@ impl LogDB {
                         id,
                         e.content.clone(),
                         e.level.clone(),
-                        e.service.clone(),
-                        e.timestamp,
+                        e.service.clone()
                     )
                 })
             })
@@ -274,20 +258,7 @@ impl LogDB {
     }
 
     pub fn cleanup_stale(&mut self) {
-        let now = now_secs();
-        let stale_secs = self.stale_secs;
-
-        // Remove stale docs in-place
-        self.docs.retain(|_id, entry| now - entry.ts <= stale_secs);
-
-        // Clean up postings for removed docs
-        self.postings.retain(|_tok, posting| {
-            posting.retain_docs(&self.docs);
-            !posting.empty()
-        });
-
-        // Rebuild indexes after cleanup
-        self.rebuild_indexes();
+        
     }
 
     pub fn rebuild_indexes(&mut self) {
@@ -424,10 +395,6 @@ impl LogDB {
     }
 }
 
-#[inline]
-fn now_secs() -> u64 {
-    elapsed_ns() / 1_000_000_000
-}
 
 fn parse_query(q: &str, config: &LogConfig) -> QueryNode {
     let mut nodes = Vec::<QueryNode>::new();
